@@ -40,7 +40,7 @@ limitations under the License.
   adjusting for the gene de novo mutation rate and evolutionary protein
   conservation. The lower the LoFtool gene score percentile the most
   intolerant is the gene to functional variation. Manuscript in
-  preparation (please contact Dr. Joao Fadista - joao.fadista@med.lu.se).
+  preparation (please see  Fadista J et al. 2017, PMID:27563026, for more details).
   The authors would like to thank the Exome Aggregation Consortium and
   the groups that provided exome variant data for comparison. A full
   list of contributing groups can be found at http://exac.broadinstitute.org/about.
