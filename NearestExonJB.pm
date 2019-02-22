@@ -23,18 +23,22 @@ limitations under the License.
 
 =head1 NAME
 
- NearestGene
+ NearestExonJB
 
 =head1 SYNOPSIS
 
- mv NearestExon.pm ~/.vep/Plugins
+ mv NearestExonJB.pm ~/.vep/Plugins
  ./vep -i variations.vcf --cache --plugin NearestExonJB
 
 =head1 DESCRIPTION
 
  This is a plugin for the Ensembl Variant Effect Predictor (VEP) that
- finds the nearest exon junction boundary(ies) to a variant. More than one boundary
+ finds the nearest exon junction boundary to a variant. More than one boundary
  may be reported if the boundaries are equidistant.
+
+ The plugin will report the Ensembl identifier of the exon, the distance of the
+ to the exon boundary, the boundary type (start or end of exon) and the total
+ length in nucleotides of the exon.
 
  Various parameters can be altered by passing them to the plugin command:
 
@@ -42,7 +46,7 @@ limitations under the License.
 
  Parameters are passed e.g.:
 
- --plugin NearestExon,limit=3,max_range=50000
+ --plugin NearestExonJB,max_range=50000
 
 =cut
 
@@ -52,7 +56,6 @@ use strict;
 use warnings;
 
 use Bio::EnsEMBL::Variation::Utils::BaseVepPlugin;
-use Data::Dumper;
 
 use base qw(Bio::EnsEMBL::Variation::Utils::BaseVepPlugin);
 
@@ -70,10 +73,7 @@ sub new {
   my $params = $self->params;
 
   # get output format
-  my $out_vcf  = 1 if ($self->{config}->{output_format} eq "vcf");
-  my $out_json = 1 if ($self->{config}->{output_format} eq "json");
-  my $out_txt = 0 if ($out_vcf || $out_json);
-  $char_sep = "+" if $out_vcf;
+  $char_sep = "+" if ($self->{config}->{output_format} eq 'vcf');
 
   foreach my $param(@$params) {
     my ($key, $val) = split('=', $param);
@@ -85,18 +85,12 @@ sub new {
 }
 
 sub feature_types {
-  return ['Feature','Intergenic'];
+  return ['Transcript'];
 }
-
-#TODO: do I need this?
-sub variant_feature_types {
-  return ['BaseVariationFeature'];
-}
-
 
 sub get_header_info {
   my $header = 'Nearest Exon Junction Boundary. Format:';
-  $header .= join($char_sep, qw(ExonID distance start/end) );
+  $header .= join($char_sep, qw(ExonID distance start/end length) );
 
   return {
     NearestExonJB => $header,
@@ -104,10 +98,10 @@ sub get_header_info {
 }
 
 sub run {
-  my ($self, $vfoa) = @_;
+  my ($self, $tva) = @_;
 
-  my $vf = $vfoa->base_variation_feature;
-  my $trv = $vfoa->base_transcript_variation;
+  my $vf = $tva->base_variation_feature;
+  my $trv = $tva->base_transcript_variation;
   my $loc_string = sprintf("%s:%i-%i", $vf->{chr} || $vf->seq_region_name, $vf->{start}, $vf->{end});
 
   if(!exists($self->{_cache}) || !exists($self->{_cache}->{$trv->transcript_stable_id})) {
@@ -126,12 +120,15 @@ sub run {
       my $endD = abs ($vf->start - $exon->seq_region_end);
       if ($startD < $endD){
         $dists{$exon->stable_id}{$startD} = 'start';
+        $dists{$exon->stable_id}{len} = $exon->length;
         $min = $startD if $min > $startD;
       } elsif ($startD > $endD){
         $dists{$exon->stable_id}{$endD} = 'end';
+        $dists{$exon->stable_id}{len} = $exon->length;
         $min = $endD if $min > $endD;
       } else {
         $dists{$exon->stable_id}{$startD} = "start_end";
+        $dists{$exon->stable_id}{len} = $exon->length;
         $min = $startD if $min > $startD;
       }
     }
@@ -139,7 +136,7 @@ sub run {
     my @finalRes;
     foreach my $exon (keys %dists){
       if (exists $dists{$exon}{$min}) {
-        push(@finalRes, $exon.$char_sep.$min.$char_sep.$dists{$exon}{$min})
+        push(@finalRes, $exon.$char_sep.$min.$char_sep.$dists{$exon}{$min}.$char_sep.$dists{$exon}{len})
       }
     }
 
