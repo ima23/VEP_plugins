@@ -716,6 +716,18 @@ my $VEP_PLUGIN_CONFIG = {
       "plugin_url" => "https://raw.githubusercontent.com/Ensembl/VEP_plugins/release/96/Phenotypes.pm",
       "params" => [
         #"/path/to/Phenotypes_data_files/phenotypes_dir_with_dumps_for_all_species.bed.gz"
+      ],
+      "form" => [
+        {
+          "name" => "sources",
+          "label" => "Sources to include",
+          "type" => "dropdown",
+          "values" => [
+            { "value" => "default", "caption" => "default, excluding cancer data" },
+            { "value" => "include_cancer", "caption" => "including cancer data" },
+          ],
+          "value" => "default",
+        },
       ]
     },
 
