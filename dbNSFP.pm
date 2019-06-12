@@ -1,7 +1,7 @@
 =head1 LICENSE
 
 Copyright [1999-2015] Wellcome Trust Sanger Institute and the EMBL-European Bioinformatics Institute
-Copyright [2016-2018] EMBL-European Bioinformatics Institute
+Copyright [2016-2019] EMBL-European Bioinformatics Institute
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,6 +29,8 @@ limitations under the License.
 
  mv dbNSFP.pm ~/.vep/Plugins
  ./vep -i variations.vcf --plugin dbNSFP,/path/to/dbNSFP.gz,col1,col2
+ ./vep -i variations.vcf --plugin dbNSFP,'consequence=ALL',/path/to/dbNSFP.gz,col1,col2
+ ./vep -i variations.vcf --plugin dbNSFP,'consequence=3_prime_UTR_variant&intron_variant',/path/to/dbNSFP.gz,col1,col2
 
 =head1 DESCRIPTION
 
@@ -58,6 +60,13 @@ limitations under the License.
  > cat dbNSFP3.5a_variant.chr* | grep -v ^#chr | sort -k1,1 -k2,2n - | cat h - | bgzip -c > dbNSFP.gz
  > tabix -s 1 -b 2 -e 2 dbNSFP.gz
  
+ For release 4.0b2 with GRCh38/hg38 data:
+ > wget ftp://dbnsfp:dbnsfp@dbnsfp.softgenetics.com/dbNSFP4.0b2a.zip
+ > unzip dbNSFP4.0b2a.zip
+ > zcat dbNSFP4.0b2a_variant.chr1.gz | head -n1 > h
+ > zgrep -h -v ^#chr dbNSFP4.0b2a_variant.chr* | sort -k1,1 -k2,2n - | cat h - | bgzip -c > dbNSFP4.0b2a.gz
+ > tabix -s 1 -b 2 -e 2 dbNSFP4.0b2a.gz
+
  When running the plugin you must list at least one column to retrieve from the
  dbNSFP file, specified as parameters to the plugin e.g.
  
@@ -113,9 +122,36 @@ sub new {
 
   $self->expand_left(0);
   $self->expand_right(0);
+  my $index = 0;
+  $self->{consequence} = 'filter';
+  if ($self->params->[$index] =~ /^consequence=/) {
+    # parse consequences
+    my $consequences = $self->params->[$index];  
+    $consequences =~ s/consequence=//;
+    if (uc $consequences eq 'ALL') {
+      $self->{consequence} = 'ALL';
+    } else {
+      %INCLUDE_SO = map {$_ => 1} split/&/, $consequences;
+    }
+    $index++;
+  }
   
   # get dbNSFP file
-  my $file = $self->params->[0];
+  my $file = $self->params->[$index];
+  my $version;
+  if ($file =~ /2\.9/) {
+    $version = '2.9';
+  } elsif ($file =~ /4\.0b1/) {
+    $version = '4.0.1';
+  } elsif ($file =~ /4\.0b2/) {
+    $version = '4.0.2';
+  } elsif ($file =~ /3\./) {
+    $version = 3;
+  } else {
+    die "ERROR: Could not retrieve dbNSFP version from filename $file\n";
+  }
+  $self->{dbNSFP_version} = $version;
+
   $self->add_file($file);
   
   # get headers
@@ -123,6 +159,7 @@ sub new {
   while(<HEAD>) {
     next unless /^\#/;
     chomp;
+    $_ =~ s/^\#//;
     $self->{headers} = [split];
   }
   close HEAD;
@@ -134,28 +171,28 @@ sub new {
     die "ERROR: Could not find required column $h in $file\n" unless grep {$_ eq $h} @{$self->{headers}};
   }
 
-  my $i = 1; 
   # check if 2nd argument is a file that specifies replacement logic
   # read replacement logic 
-  my $replacement_file = $self->params->[$i];
+  $index++;
+  my $replacement_file = $self->params->[$index];
   if (defined $replacement_file && -e $replacement_file) {
     $self->add_replacement_logic($replacement_file);  
-    $i++;
+    $index++;
   } else {
     $self->add_replacement_logic();  
   } 
  
   # get required columns
-  while(defined($self->params->[$i])) {
-    my $col = $self->params->[$i];
+  while(defined($self->params->[$index])) {
+    my $col = $self->params->[$index];
     if($col eq 'ALL') {
       $self->{cols} = {map {$_ => 1} @{$self->{headers}}};
       last;
     }
     die "ERROR: Column $col not found in header for file $file. Available columns are:\n".join(",", @{$self->{headers}})."\n" unless grep {$_ eq $col} @{$self->{headers}};
     
-    $self->{cols}->{$self->params->[$i]} = 1;
-    $i++;
+    $self->{cols}->{$self->params->[$index]} = 1;
+    $index++;
   }
   
   die "ERROR: No columns selected to fetch. Available columns are:\n".join(",", @{$self->{headers}})."\n" unless defined($self->{cols}) && scalar keys %{$self->{cols}};
@@ -237,7 +274,9 @@ sub run {
   my ($self, $tva) = @_;
   
   # only for missense variants
-  return {} unless grep {$INCLUDE_SO{$_->SO_term}} @{$tva->get_all_OverlapConsequences};
+  if ($self->{consequence} eq 'filter') {
+    return {} unless grep {$INCLUDE_SO{$_->SO_term}} @{$tva->get_all_OverlapConsequences};
+  }
   
   my $vf = $tva->variation_feature;
   
@@ -260,7 +299,7 @@ sub run {
   foreach my $tmp_data(@{$self->get_data($chr, $vf->{start} - 1, $vf->{end})}) {
     # compare allele and transcript
     if ($assembly eq 'GRCh37') {
-      if (exists $tmp_data->{'pos(1-coor)'}) {
+      if (exists $tmp_data->{'pos(1-coor)'} && $self->{dbNSFP_version} eq '2.9') {
         # for dbNSFP version 2.9.1
         $pos = $tmp_data->{'pos(1-coor)'}
       } elsif (exists $tmp_data->{'hg19_pos(1-based)'}) {
@@ -272,16 +311,16 @@ sub run {
     } else {
       if (exists $tmp_data->{'pos(1-based)'}) {
         $pos = $tmp_data->{'pos(1-based)'}
+      } elsif (exists $tmp_data->{'pos(1-coor)'} && $self->{dbNSFP_version} eq '4.0.1' ) {
+        $pos = $tmp_data->{'pos(1-coor)'};
       } else {
-        die "dbNSFP file does not contain required column pos(1-based) to use with GRCh38";
+        die "dbNSFP file does not contain required column pos(1-based) to use with GRCh38 or pos(1-coor) for dbNSFP version 4.0";
       }
     }
-
     next unless
       $pos == $vf->{start} &&
       defined($tmp_data->{alt}) &&
       $tmp_data->{alt} eq $allele;
-    
     # make a clean copy as we're going to edit it
     %$data = %$tmp_data;
 

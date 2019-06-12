@@ -1,7 +1,7 @@
 =head1 LICENSE
 
 Copyright [1999-2015] Wellcome Trust Sanger Institute and the EMBL-European Bioinformatics Institute
-Copyright [2016-2018] EMBL-European Bioinformatics Institute
+Copyright [2016-2019] EMBL-European Bioinformatics Institute
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -60,7 +60,7 @@ use strict;
 use warnings;
 
 use Bio::EnsEMBL::Utils::Sequence qw(reverse_comp);
-use Bio::EnsEMBL::Variation::Utils::Sequence qw(get_matched_variant_alleles);
+use Bio::EnsEMBL::Variation::Utils::Sequence qw(get_matched_variant_alleles trim_sequences);
 
 use Bio::EnsEMBL::Variation::Utils::VEP qw(parse_line get_slice);
 
@@ -171,7 +171,6 @@ sub run {
   
   # get allele, reverse comp if needed
   my $allele;
-  
   $allele = $tva->variation_feature_seq;
   reverse_comp(\$allele) if $vf->{strand} < 0;
   
@@ -256,16 +255,25 @@ sub run {
             foreach my $a(@vcf_alleles) {
               my $ac = shift @ac;
               $an = shift @an if @an;
-
+              my $matched_allele_string;
+              my $trimmed_seq_hash = trim_sequences($ref_allele, $a);
+              $trimmed_seq_hash->[0] ||= '-';
+              $trimmed_seq_hash->[1] ||= '-';
+              $matched_allele_string = $trimmed_seq_hash->[0] . '/' . $trimmed_seq_hash->[1] if scalar(@{$trimmed_seq_hash}) > 2;
+                  
               $total_ac += $ac;
               if ($self->{display_ac}){
                 $data->{$a}->{'ExAC_'.$ach} = $ac;
+                $data->{$matched_allele_string}->{'ExAC_'.$ach} = $ac if defined($matched_allele_string) && ($matched_allele_string eq $vf->allele_string);
               }
               if ($self->{display_an}){
                 $data->{$a}->{'ExAC_'.$anh} = $an;
+                $data->{$matched_allele_string}->{'ExAC_'.$anh} = $an if defined($matched_allele_string) && ($matched_allele_string eq $vf->allele_string);
               }
 
               $data->{$a}->{'ExAC_'.$afh} = sprintf("%.3g", $ac / $an) if $an;
+              $data->{$matched_allele_string}->{'ExAC_'.$afh} = sprintf("%.3g", $ac / $an) if $an && defined($matched_allele_string) && ($matched_allele_string eq $vf->allele_string);
+              
             }
             
             # use total to get ref allele freq
@@ -286,7 +294,7 @@ sub run {
   
   # overwrite cache
   $self->{cache} = {$pos_string => $data};
-  return defined($data->{$allele}) ? $data->{$allele} : {};
+  return defined($data->{$vf->allele_string}) ? $data->{$vf->allele_string} : (defined($data->{$allele}) ? $data->{$allele} : {});
 }
 
 1;

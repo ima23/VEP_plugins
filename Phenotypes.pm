@@ -1,7 +1,7 @@
 =head1 LICENSE
 
 Copyright [1999-2015] Wellcome Trust Sanger Institute and the EMBL-European Bioinformatics Institute
-Copyright [2016-2018] EMBL-European Bioinformatics Institute
+Copyright [2016-2019] EMBL-European Bioinformatics Institute
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -49,6 +49,9 @@ limitations under the License.
 
  Several paramters can be set using a key=value system:
 
+ dir            : provide a dir path, where either to create anew the species
+                  specific file from the download or to look for an existing file
+
  file           : provide a file path, either to create anew from the download
                   or to point to an existing file
 
@@ -70,9 +73,14 @@ limitations under the License.
  expand_right   : sets cache size in bp. By default annotations 100000bp (100kb)
                   downstream of the initial lookup are cached
 
+ phenotype_feature : report the specific gene or variation the phenotype is
+                  linked to, this can be an overlapping gene or structural variation,
+                  and the source of the annotation (default 0)
+
  Example:
 
  --plugin Phenotypes,file=${HOME}/phenotypes.gff.gz,include_types=Gene
+ --plugin Phenotypes,dir=${HOME},include_types=Gene
  
 =cut
 
@@ -87,10 +95,17 @@ use base qw(Bio::EnsEMBL::Variation::Utils::BaseVepTabixPlugin);
 
 # default config
 my %DEFAULTS = (
-  exclude_sources => 'HGMD_PUBLIC&COSMIC',
+  exclude_sources => 'HGMD-PUBLIC&COSMIC',
   exclude_types => 'StructuralVariation&SupportingStructuralVariation',
   expand_right => 100000,
+  phenotype_feature => 0,
 );
+
+my %output_format;
+my $char_sep = "|";
+
+my %cols = (phenotype => 1, source => 1, id => 1);
+my @fields_order = ("phenotype", "source", "id");
 
 my @FIELDS = qw(seq_region_name source type start end score strand frame attributes comments);
 
@@ -102,7 +117,20 @@ sub new {
   my $params_hash = $self->params_to_hash();
   $DEFAULTS{$_} = $params_hash->{$_} for keys %$params_hash;
 
-  unless($DEFAULTS{file}) {
+  #for REST calls report all data (use json output flag)
+  $self->{config}->{output_format} ||= $DEFAULTS{output_format};
+
+  # get output format
+  if ($self->{config}->{output_format}) {
+    $output_format{$self->{config}->{output_format}} = 1;
+  }
+  $char_sep = "+" if ($output_format{'vcf'});
+
+  #DEFAULTS are not refreshed automatically by multiple REST calls unless forced
+  my $refresh = 0;
+  $refresh = 1 if (exists $DEFAULTS{species} && $DEFAULTS{species} ne $self->{config}{species});
+
+  unless($DEFAULTS{file} && !$refresh) {
     my $pkg = __PACKAGE__;
     $pkg .= '.pm';
 
@@ -112,7 +140,19 @@ sub new {
     my $version = $config->{db_version} || 'Bio::EnsEMBL::Registry'->software_version;
     my $assembly = $config->{assembly};
 
-    $DEFAULTS{file} = sprintf("%s_%s_%i_%s.bed.gz", $INC{$pkg}, $species, $version, $assembly);
+    my $dir = $DEFAULTS{dir};
+    if(defined $dir && -d $dir){
+      $dir =~ s/\/?$/\//; #ensure dir path string ends in slash
+      if( $species eq 'homo_sapiens' || $species eq 'human'){
+        $assembly ||= $config->{human_assembly};
+        $DEFAULTS{file} = sprintf("%s_%s_%i_%s.gvf.gz", $dir.$pkg, $species, $version, $assembly);
+      } else {
+        $DEFAULTS{file} = sprintf("%s_%s_%i.gvf.gz", $dir.$pkg, $species, $version);
+      }
+    } else { #assembly value will be automatically populated by VEP script but not by REST server
+      $DEFAULTS{file} = sprintf("%s_%s_%i_%s.gvf.gz", $INC{$pkg}, $species, $version, $assembly);
+    }
+    $DEFAULTS{species} = $species;
   }
 
   $self->generate_phenotype_gff($DEFAULTS{file}) if !(-e $DEFAULTS{file}) || (-e $DEFAULTS{file}.'.lock');
@@ -126,6 +166,10 @@ sub new {
 
 sub feature_types {
   return ['Feature','Intergenic'];
+}
+
+sub variant_feature_types {
+  return ['BaseVariationFeature'];
 }
 
 sub get_header_info {
@@ -166,7 +210,8 @@ sub generate_phenotype_gff {
       CONCAT_WS('; ',
         CONCAT('id=', pf.object_id),
         CONCAT('phenotype="', REPLACE(p.description, '"', ''), '"'),
-        GROUP_CONCAT(at.code, "=", concat('"', pfa.value, '"') SEPARATOR '; ')
+        GROUP_CONCAT(at.code, "=", concat('"', pfa.value, '"') SEPARATOR '; '),
+        GROUP_CONCAT('submitter_name="', sub.description, '"')
       ) AS attribute
 
       FROM
@@ -175,11 +220,16 @@ sub generate_phenotype_gff {
         phenotype p,
         phenotype_feature pf
 
-      LEFT JOIN (phenotype_feature_attrib pfa, attrib_type `at`)
-      ON (
-        pf.phenotype_feature_id = pfa.phenotype_feature_id
-        AND pfa.attrib_type_id = at.attrib_type_id
-      )
+      LEFT JOIN phenotype_feature_attrib pfa
+        ON pf.phenotype_feature_id = pfa.phenotype_feature_id
+      LEFT JOIN attrib_type `at`
+        ON pfa.attrib_type_id = at.attrib_type_id
+      LEFT JOIN submitter sub
+        ON (
+          pfa.value = sub.submitter_id
+          AND pfa.attrib_type_id = at.attrib_type_id
+          AND at.code = 'submitter_id'
+        )
 
       WHERE sr.seq_region_id = pf.seq_region_id
       AND s.source_id = pf.source_id
@@ -192,6 +242,8 @@ sub generate_phenotype_gff {
   $sth->execute();
 
   print STDERR "### Phenotypes plugin: Writing to file\n" unless $config->{quiet};
+  my $file_sorted = $file;
+  $file .= ".tmp";
 
   my $lock = "$file\.lock";
   open LOCK, ">$lock" or die "ERROR: Unable to write to lock file $lock\n";
@@ -199,8 +251,11 @@ sub generate_phenotype_gff {
   close LOCK;
 
   open OUT, " | bgzip -c > $file" or die "ERROR: Unable to write to file $file\n";
+  print OUT "##gvf-version 1.10\n"; #HEADER
 
   while(my $row = $sth->fetchrow_arrayref()) {
+    # swap start end for insertions
+    @$row[3,4] = @$row[4,3] if (@$row[3] > @$row[4]);
     print OUT join("\t", map {defined($_) ? $_ : '.'} @$row)."\n";
   }
 
@@ -210,27 +265,61 @@ sub generate_phenotype_gff {
 
   $sth->finish();
 
+  print STDERR "### Phenotypes plugin: Sorting file with sort\n" unless $config->{quiet};
+
+  system("(zgrep '^#' $file;  zgrep -v '^#' $file | sort -k1,1 -k4,4n ) | bgzip -c > $file_sorted") and die("ERROR: sort failed\n");
+
   print STDERR "### Phenotypes plugin: Indexing file with tabix\n" unless $config->{quiet};
 
-  system("tabix -p gff $file") and die("ERROR: tabix failed\n");
+  system("tabix -p gff $file_sorted") and die("ERROR: tabix failed\n");
 
   print STDERR "### Phenotypes plugin: All done!\n" unless $config->{quiet};
 }
 
 sub run {
-  my ($self, $tva) = @_;
+  my ($self, $bvfo) = @_;
   
-  my $vf = $tva->variation_feature;
+  my $vf = $bvfo->base_variation_feature;
   
   # adjust coords for tabix
-  my ($s, $e) = ($vf->{start} - 1, $vf->{end});
-  
+  my ($s, $e) = ($vf->{start}, $vf->{end});
+  ($s, $e) = ($vf->{end}, $vf->{start}) if ($vf->{start} > $vf->{end}); # swap for insertions
+
   my $data = $self->get_data($vf->{chr}, $s, $e);
 
   return {} unless $data && scalar @$data;
 
+  return { PHENOTYPES =>  $data } if ($output_format{'json'});
+
+  if ($DEFAULTS{phenotype_feature}){
+    my %result_uniq;
+    my @result_str = ();
+
+    foreach my $tmp_data(@{$data}) {
+      # get required data
+      my %tmp_return =
+        map {$_ => $tmp_data->{$_}}
+        grep {defined($cols{$_})}  # only include selected cols
+        keys %$tmp_data;
+
+      # replace link characters with _
+      $tmp_return{phenotype} =~ tr/ ;,)(/\_\_\_\_\_/;
+
+      # report only unique set of fields
+      my $record_line = join(",", values %tmp_return);
+      next if defined $result_uniq{$record_line};
+      $result_uniq{$record_line} = 1;
+
+      push(@result_str, join($char_sep, @tmp_return{@fields_order}));
+    }
+
+    return { PHENOTYPES => \@result_str };
+  }
+
+  my %result_uniq = map { $_ => 1} map {$_->{phenotype} =~ tr/ ;,)(/\_\_\_\_\_/; $_->{phenotype}} @$data;
+
   return {
-    PHENOTYPES => $self->{config}->{output_format} eq "json" ? $data : join(",", map {$_->{phenotype} =~ tr/ ;/\_\_/; $_->{phenotype}} @$data)
+    PHENOTYPES => join(",", keys %result_uniq )
   };
 }
 
@@ -272,6 +361,7 @@ sub parse_data {
       my ($key, $value) = split /\=/, $pair;
 
       next unless defined($key) and defined($value);
+      next if $key eq 'submitter_id'; # if submitter_id exists, submitter_name should also exist and displayed
       
       # remove quote marks
       $value =~ s/\"//g;

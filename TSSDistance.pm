@@ -1,7 +1,7 @@
 =head1 LICENSE
 
 Copyright [1999-2015] Wellcome Trust Sanger Institute and the EMBL-European Bioinformatics Institute
-Copyright [2016-2018] EMBL-European Bioinformatics Institute
+Copyright [2016-2019] EMBL-European Bioinformatics Institute
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ limitations under the License.
 =head1 SYNOPSIS
 
  mv TSSDistance.pm ~/.vep/Plugins
- ./vep -i variations.vcf --plugin CCDSFilter
+ ./vep -i variations.vcf --plugin TSSDistance
 
 =head1 DESCRIPTION
 
